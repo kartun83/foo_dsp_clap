@@ -51,48 +51,73 @@ using namespace foo_clap_dsp;
 @implementation ClapDspView
 
 - (void)loadView {
+    // Built with Auto Layout and pinned to the top-leading corner so the controls
+    // stay visible regardless of how the DSP-manager host sizes the panel (a fixed
+    // absolute layout landed the top controls off-screen on some hosts).
     NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 480, 440)];
 
-    CGFloat y = 400;
-    NSTextField* pluginLbl = [self labelWithText:@"Plugin:" frame:NSMakeRect(16, y + 2, 60, 20)];
-    [root addSubview:pluginLbl];
-    self.pluginPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(80, y, 280, 26)];
+    self.pluginPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect];
     self.pluginPopup.target = self;
     self.pluginPopup.action = @selector(onPluginChanged:);
-    [root addSubview:self.pluginPopup];
-    NSButton* rescan = [self buttonWithTitle:@"Rescan" frame:NSMakeRect(366, y, 98, 26)
-                                      action:@selector(onRescan:)];
-    [root addSubview:rescan];
+    NSButton* rescan = [self buttonWithTitle:@"Rescan" action:@selector(onRescan:)];
+    NSStackView* row1 = [self rowWithLabel:@"Plugin:" field:self.pluginPopup trailing:rescan];
 
-    y -= 36;
-    NSTextField* presetLbl = [self labelWithText:@"Preset:" frame:NSMakeRect(16, y + 2, 60, 20)];
-    [root addSubview:presetLbl];
-    self.presetPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(80, y, 280, 26)];
+    self.presetPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect];
     self.presetPopup.target = self;
     self.presetPopup.action = @selector(onPresetChanged:);
-    [root addSubview:self.presetPopup];
-    NSButton* loadList = [self buttonWithTitle:@"Load list" frame:NSMakeRect(366, y, 98, 26)
-                                        action:@selector(onLoadPresets:)];
-    [root addSubview:loadList];
+    NSButton* loadList = [self buttonWithTitle:@"Load list" action:@selector(onLoadPresets:)];
+    NSStackView* row2 = [self rowWithLabel:@"Preset:" field:self.presetPopup trailing:loadList];
 
-    y -= 40;
-    NSButton* gui = [self buttonWithTitle:@"Open Plugin GUI" frame:NSMakeRect(80, y, 200, 28)
-                                   action:@selector(onOpenGui:)];
-    [root addSubview:gui];
+    NSButton* gui = [self buttonWithTitle:@"Open Plugin GUI" action:@selector(onOpenGui:)];
+    gui.controlSize = NSControlSizeRegular;
 
-    y -= 28;
-    self.statusLabel = [self labelWithText:@"" frame:NSMakeRect(16, y, 448, 20)];
+    self.statusLabel = [self labelWithText:@""];
     self.statusLabel.textColor = [NSColor secondaryLabelColor];
-    [root addSubview:self.statusLabel];
+    self.statusLabel.lineBreakMode = NSLineBreakByWordWrapping;
+    [self.statusLabel.cell setWraps:YES];
+
+    NSStackView* header = [NSStackView stackViewWithViews:@[ row1, row2, gui, self.statusLabel ]];
+    header.orientation = NSUserInterfaceLayoutOrientationVertical;
+    header.alignment = NSLayoutAttributeLeading;
+    header.spacing = 8;
+    header.translatesAutoresizingMaskIntoConstraints = NO;
+    [root addSubview:header];
 
     // Parameter list (used only when the plugin has no embeddable GUI).
-    self.paramScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(16, 16, 448, y - 24)];
+    self.paramScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
     self.paramScroll.hasVerticalScroller = YES;
     self.paramScroll.borderType = NSBezelBorder;
     self.paramScroll.drawsBackground = NO;
+    self.paramScroll.translatesAutoresizingMaskIntoConstraints = NO;
     [root addSubview:self.paramScroll];
 
+    [NSLayoutConstraint activateConstraints:@[
+        [header.topAnchor constraintEqualToAnchor:root.topAnchor constant:16],
+        [header.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:16],
+        [header.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-16],
+        [self.paramScroll.topAnchor constraintEqualToAnchor:header.bottomAnchor constant:8],
+        [self.paramScroll.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:16],
+        [self.paramScroll.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-16],
+        [self.paramScroll.bottomAnchor constraintEqualToAnchor:root.bottomAnchor constant:-16],
+        [root.widthAnchor constraintGreaterThanOrEqualToConstant:460],
+    ]];
+
     self.view = root;
+    self.preferredContentSize = NSMakeSize(480, 440);
+}
+
+// A "[Label] [field...........] [button]" row as a horizontal stack.
+- (NSStackView*)rowWithLabel:(NSString*)text field:(NSView*)field trailing:(NSView*)trailing {
+    NSTextField* label = [self labelWithText:text];
+    [label setContentHuggingPriority:NSLayoutPriorityDefaultHigh
+                      forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [field setContentHuggingPriority:NSLayoutPriorityDefaultLow
+                     forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSStackView* row = [NSStackView stackViewWithViews:@[ label, field, trailing ]];
+    row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    row.spacing = 8;
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    return row;
 }
 
 - (void)viewDidLoad {
@@ -130,22 +155,19 @@ using namespace foo_clap_dsp;
 
 // --- helpers ---------------------------------------------------------------
 
-- (NSTextField*)labelWithText:(NSString*)text frame:(NSRect)frame {
-    NSTextField* l = [[NSTextField alloc] initWithFrame:frame];
-    l.stringValue = text;
-    l.bezeled = NO;
-    l.drawsBackground = NO;
-    l.editable = NO;
-    l.selectable = NO;
+- (NSTextField*)labelWithText:(NSString*)text {
+    NSTextField* l = [NSTextField labelWithString:text ?: @""];
+    l.translatesAutoresizingMaskIntoConstraints = NO;
     return l;
 }
 
-- (NSButton*)buttonWithTitle:(NSString*)title frame:(NSRect)frame action:(SEL)action {
-    NSButton* b = [[NSButton alloc] initWithFrame:frame];
+- (NSButton*)buttonWithTitle:(NSString*)title action:(SEL)action {
+    NSButton* b = [[NSButton alloc] initWithFrame:NSZeroRect];
     b.title = title;
     b.bezelStyle = NSBezelStyleRounded;
     b.target = self;
     b.action = action;
+    b.translatesAutoresizingMaskIntoConstraints = NO;
     return b;
 }
 
@@ -358,8 +380,9 @@ using namespace foo_clap_dsp;
         _paramIds.push_back(info.id);
         NSInteger tag = (NSInteger)(_paramIds.size() - 1);
 
-        NSTextField* name = [self labelWithText:[NSString stringWithUTF8String:info.name.c_str()] ?: @"?"
-                                          frame:NSMakeRect(6, y + 20, 418, 18)];
+        NSTextField* name = [NSTextField labelWithString:
+                             [NSString stringWithUTF8String:info.name.c_str()] ?: @"?"];
+        name.frame = NSMakeRect(6, y + 20, 418, 18);
         [doc addSubview:name];
 
         NSSlider* slider = [[NSSlider alloc] initWithFrame:NSMakeRect(6, y, 418, 20)];
