@@ -43,8 +43,8 @@ using namespace foo_clap_dsp;
 @property (nonatomic, strong) NSPopUpButton* pluginPopup;
 @property (nonatomic, strong) NSPopUpButton* presetPopup;
 @property (nonatomic, strong) NSTextField* statusLabel;
-@property (nonatomic, strong) NSScrollView* paramScroll;
-@property (nonatomic, strong) NSWindow* pluginWindow;
+@property (nonatomic, strong) NSWindow* pluginWindow;    // native plugin GUI
+@property (nonatomic, strong) NSWindow* paramsWindow;    // generic slider fallback
 @property (nonatomic, strong) NSTimer* pollTimer;
 @end
 
@@ -83,27 +83,18 @@ using namespace foo_clap_dsp;
     header.translatesAutoresizingMaskIntoConstraints = NO;
     [root addSubview:header];
 
-    // Parameter list (used only when the plugin has no embeddable GUI).
-    self.paramScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
-    self.paramScroll.hasVerticalScroller = YES;
-    self.paramScroll.borderType = NSBezelBorder;
-    self.paramScroll.drawsBackground = NO;
-    self.paramScroll.translatesAutoresizingMaskIntoConstraints = NO;
-    [root addSubview:self.paramScroll];
-
+    // Compact dialog: just the picker rows. The plugin's own GUI (or the generic
+    // parameter sliders, for plugins without one) opens in a separate window.
     [NSLayoutConstraint activateConstraints:@[
         [header.topAnchor constraintEqualToAnchor:root.topAnchor constant:16],
         [header.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:16],
         [header.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-16],
-        [self.paramScroll.topAnchor constraintEqualToAnchor:header.bottomAnchor constant:8],
-        [self.paramScroll.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:16],
-        [self.paramScroll.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-16],
-        [self.paramScroll.bottomAnchor constraintEqualToAnchor:root.bottomAnchor constant:-16],
+        [header.bottomAnchor constraintLessThanOrEqualToAnchor:root.bottomAnchor constant:-16],
         [root.widthAnchor constraintGreaterThanOrEqualToConstant:460],
     ]];
 
     self.view = root;
-    self.preferredContentSize = NSMakeSize(480, 440);
+    self.preferredContentSize = NSMakeSize(480, 188);
 }
 
 // A "[Label] [field...........] [button]" row as a horizontal stack.
@@ -150,6 +141,7 @@ using namespace foo_clap_dsp;
     [self.pollTimer invalidate];
     self.pollTimer = nil;
     [self closePluginWindow];
+    [self closeParamsWindow];
     _host.reset();
 }
 
@@ -307,7 +299,7 @@ using namespace foo_clap_dsp;
     if (_host->guiSupportsEmbeddedCocoa()) {
         [self openNativeGuiWindow];
     } else {
-        [self buildGenericParamUI];
+        [self openGenericParamsWindow];
     }
 }
 
@@ -362,17 +354,25 @@ using namespace foo_clap_dsp;
         [self captureStateAndPush];   // persist whatever the GUI left us with
         self.pluginWindow.delegate = nil;
         self.pluginWindow = nil;
+    } else if (notification.object == self.paramsWindow) {
+        [self captureStateAndPush];
+        self.paramsWindow.delegate = nil;
+        self.paramsWindow = nil;
     }
 }
 
-// --- generic parameter UI (fallback) ---------------------------------------
+// --- generic parameter UI (fallback, plugins without an embeddable GUI) -----
 
-- (void)buildGenericParamUI {
+- (void)openGenericParamsWindow {
+    if (self.paramsWindow) {
+        [self.paramsWindow makeKeyAndOrderFront:nil];
+        return;
+    }
     uint32_t n = _host->paramCount();
     _paramIds.clear();
-    CGFloat rowH = 44;
-    NSView* doc = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 430, MAX(1u, n) * rowH)];
 
+    const CGFloat rowH = 44, docW = 430;
+    NSView* doc = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, docW, MAX(1u, n) * rowH)];
     CGFloat y = (CGFloat)n * rowH - rowH;
     for (uint32_t i = 0; i < n; ++i) {
         ClapParamInfo info;
@@ -382,10 +382,10 @@ using namespace foo_clap_dsp;
 
         NSTextField* name = [NSTextField labelWithString:
                              [NSString stringWithUTF8String:info.name.c_str()] ?: @"?"];
-        name.frame = NSMakeRect(6, y + 20, 418, 18);
+        name.frame = NSMakeRect(6, y + 20, docW - 12, 18);
         [doc addSubview:name];
 
-        NSSlider* slider = [[NSSlider alloc] initWithFrame:NSMakeRect(6, y, 418, 20)];
+        NSSlider* slider = [[NSSlider alloc] initWithFrame:NSMakeRect(6, y, docW - 12, 20)];
         slider.minValue = info.minValue;
         slider.maxValue = info.maxValue;
         slider.doubleValue = _host->paramValue(info.id);
@@ -396,8 +396,32 @@ using namespace foo_clap_dsp;
 
         y -= rowH;
     }
-    self.paramScroll.documentView = doc;
+
+    NSScrollView* scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, docW + 20, 460)];
+    scroll.hasVerticalScroller = YES;
+    scroll.borderType = NSNoBorder;
+    scroll.documentView = doc;
+
+    NSWindowStyleMask mask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable;
+    self.paramsWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, docW + 20, 460)
+                                                    styleMask:mask
+                                                      backing:NSBackingStoreBuffered
+                                                        defer:NO];
+    self.paramsWindow.releasedWhenClosed = NO;
+    self.paramsWindow.delegate = self;
+    self.paramsWindow.title = [NSString stringWithFormat:@"%s — Parameters",
+                               _host->displayName().c_str()];
+    self.paramsWindow.contentView = scroll;
+    [self.paramsWindow center];
+    [self.paramsWindow makeKeyAndOrderFront:nil];
     self.statusLabel.stringValue = [NSString stringWithFormat:@"%u parameters.", n];
+}
+
+- (void)closeParamsWindow {
+    if (!self.paramsWindow) return;
+    self.paramsWindow.delegate = nil;
+    [self.paramsWindow close];
+    self.paramsWindow = nil;
 }
 
 - (void)onSliderMoved:(NSSlider*)sender {
